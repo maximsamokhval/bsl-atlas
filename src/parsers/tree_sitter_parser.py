@@ -9,7 +9,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Path where the compiled grammar is baked into the Docker image
 _LIB_PATH = Path("/app/lib/bsl.so")
 
 _language = None
@@ -29,7 +28,6 @@ def _init() -> bool:
             logger.debug(f"tree-sitter-bsl library not found at {_LIB_PATH} — using regex fallback")
             return False
 
-        # tree-sitter >= 0.22 API: load .so via ctypes, pass raw pointer to Language()
         lib = ctypes.cdll.LoadLibrary(str(_LIB_PATH))
         fn = lib.tree_sitter_bsl
         fn.restype = ctypes.c_void_p

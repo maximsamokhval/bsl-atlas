@@ -18,7 +18,6 @@ COPY src/ ./src/
 RUN pip install --no-cache-dir .
 
 # Compile tree-sitter-bsl grammar into a shared library via gcc
-# (Language.build_library removed in tree-sitter >= 0.22; gcc compiles parser.c directly)
 RUN git clone --depth 1 https://github.com/alkoleft/tree-sitter-bsl /tmp/tree-sitter-bsl \
     && mkdir -p /app/lib \
     && cd /tmp/tree-sitter-bsl \
