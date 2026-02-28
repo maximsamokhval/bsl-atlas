@@ -1,4 +1,4 @@
-"""Vector indexer with ChromaDB and cloud embeddings.
+﻿"""Vector indexer with ChromaDB and cloud embeddings.
 
 Provides incremental indexing and hybrid search capabilities.
 """
@@ -493,7 +493,7 @@ class VectorIndexer:
                             "name": obj["name"],
                             "source_file": str(file_path),
                             "functions": ",".join(func_names),
-                            "module_type": "",
+                            "module_type": self.code_parser._extract_module_type(file_path),
                             "is_export": False,
                         },
                     )
