@@ -587,30 +587,54 @@ async def health_check(request):
 
 @mcp.custom_route("/reindex", methods=["POST"])
 async def reindex_endpoint(request):
-    """Trigger full reindex via HTTP (SQLite + ChromaDB)."""
+    """Trigger reindex via HTTP (SQLite + ChromaDB).
+
+    Body (JSON, optional):
+        force (bool): If true, clear ChromaDB and re-index everything using
+                      cloud provider (openrouter). Default: false — incremental
+                      reindex using file_tracker + local ollama.
+    """
     from starlette.background import BackgroundTask
     from starlette.responses import JSONResponse
 
     if not indexer and not sqlite_store:
         return JSONResponse({"error": "Services not initialized"}, status_code=503)
 
-    def run_indexing():
+    try:
+        body = await request.json()
+        force = bool(body.get("force", False))
+    except Exception:
+        force = False
+
+    def run_indexing(force: bool):
         try:
-            logger.info("Starting background full reindex...")
-            if sqlite_store:
-                _rebuild_sqlite()
-            if indexer:
-                _swap_to_reindex_provider()
-                indexer.clear_all()
-                sqlite_has_data = sqlite_store.has_data() if sqlite_store else False
-                indexer.index_directory(sqlite_enabled=sqlite_has_data)
-            logger.info(f"Background reindex completed (provider: {config.reindex_provider})")
+            if force:
+                logger.info("Starting background FULL reindex (force=true, cloud provider)...")
+                if sqlite_store:
+                    _rebuild_sqlite()
+                if indexer:
+                    _swap_to_reindex_provider()
+                    indexer.clear_all()
+                    sqlite_has_data = sqlite_store.has_data() if sqlite_store else False
+                    indexer.index_directory(sqlite_enabled=sqlite_has_data)
+                logger.info(f"Background full reindex completed (provider: {config.reindex_provider})")
+            else:
+                logger.info("Starting background INCREMENTAL reindex (force=false, local provider)...")
+                if sqlite_store:
+                    _rebuild_sqlite()
+                if indexer:
+                    _swap_to_reindex_provider()
+                    # No clear_all() — file_tracker skips unchanged files
+                    sqlite_has_data = sqlite_store.has_data() if sqlite_store else False
+                    indexer.index_directory(sqlite_enabled=sqlite_has_data)
+                logger.info("Background incremental reindex completed")
         except Exception as e:
             logger.error(f"Background reindex failed: {e}", exc_info=True)
 
+    mode = "full (cloud)" if force else "incremental (local)"
     return JSONResponse(
-        {"status": "started", "message": "Reindex started in background"},
-        background=BackgroundTask(run_indexing),
+        {"status": "started", "message": f"Reindex started in background ({mode})", "force": force},
+        background=BackgroundTask(run_indexing, force),
     )
 
 
