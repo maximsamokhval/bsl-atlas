@@ -557,3 +557,7 @@ class ChromaDBEmbeddingFunction(EmbeddingFunction):
     def __call__(self, input: Documents) -> Embeddings:
         """Generate embeddings for ChromaDB."""
         return self._provider.embed_documents(list(input))
+
+    def embed_raw(self, input: Documents) -> list:
+        """Generate embeddings bypassing ChromaDB validation (may contain None for failed batches)."""
+        return self._provider.embed_documents(list(input))

@@ -609,7 +609,7 @@ async def reindex_endpoint(request):
     def run_indexing(force: bool):
         try:
             if force:
-                logger.info("Starting background FULL reindex (force=true, cloud provider)...")
+                logger.info("Starting background FULL reindex (force=true, local provider)...")
                 if sqlite_store:
                     _rebuild_sqlite()
                 if indexer:
@@ -631,7 +631,7 @@ async def reindex_endpoint(request):
         except Exception as e:
             logger.error(f"Background reindex failed: {e}", exc_info=True)
 
-    mode = "full (cloud)" if force else "incremental (local)"
+    mode = "full (local)" if force else "incremental (local)"
     return JSONResponse(
         {"status": "started", "message": f"Reindex started in background ({mode})", "force": force},
         background=BackgroundTask(run_indexing, force),

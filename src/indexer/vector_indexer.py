@@ -570,8 +570,8 @@ class VectorIndexer:
             metadatas = [{k: v for k, v in chunk["metadata"].items()} for chunk in batch_chunks]
             
             try:
-                # Get embeddings explicitly so we can filter out failed ones
-                embeddings = self.embedding_function(contents)
+                # Get embeddings bypassing ChromaDB validation wrapper (may contain None)
+                embeddings = self.embedding_function.embed_raw(contents)
                 # Filter out entries where embedding failed (None)
                 valid = [
                     (i, e) for i, e in enumerate(embeddings) if e is not None
