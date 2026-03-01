@@ -170,7 +170,12 @@ class ParallelOpenRouterEmbeddings:
                 
                 # Sort by index to maintain order
                 sorted_data = sorted(data["data"], key=lambda x: x["index"])
-                return [item["embedding"] for item in sorted_data]
+                embeddings = [item["embedding"] for item in sorted_data]
+                if len(embeddings) != len(texts):
+                    raise ValueError(
+                        f"API returned {len(embeddings)} embeddings for {len(texts)} texts"
+                    )
+                return embeddings
                 
             except Exception as e:
                 last_error = e

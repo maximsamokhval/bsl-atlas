@@ -570,18 +570,33 @@ class VectorIndexer:
             metadatas = [{k: v for k, v in chunk["metadata"].items()} for chunk in batch_chunks]
             
             try:
-                # This will trigger embedding for batch_chunks at once
+                # Get embeddings explicitly so we can filter out failed ones
+                embeddings = self.embedding_function(contents)
+                # Filter out entries where embedding failed (None)
+                valid = [
+                    (i, e) for i, e in enumerate(embeddings) if e is not None
+                ]
+                if len(valid) < len(batch_chunks):
+                    skipped = len(batch_chunks) - len(valid)
+                    logger.warning(
+                        f"Skipping {skipped} chunks with failed embeddings "
+                        f"in sub-batch {batch_idx // self.CHROMA_MAX_BATCH + 1}"
+                    )
+                if not valid:
+                    continue
+                valid_idx = [i for i, _ in valid]
                 collection.add(
-                    ids=ids,
-                    documents=contents,
-                    metadatas=metadatas,
+                    ids=[ids[i] for i in valid_idx],
+                    documents=[contents[i] for i in valid_idx],
+                    metadatas=[metadatas[i] for i in valid_idx],
+                    embeddings=[e for _, e in valid],
                 )
-                total_indexed += len(batch_chunks)
+                total_indexed += len(valid)
                 logger.info(
-                    f"Batch indexed {len(batch_chunks)} chunks to {collection.name} "
+                    f"Batch indexed {len(valid)} chunks to {collection.name} "
                     f"(sub-batch {batch_idx // self.CHROMA_MAX_BATCH + 1})"
                 )
-                
+
             except Exception as e:
                 logger.error(f"Error batch indexing to {collection.name}: {e}")
                 raise
