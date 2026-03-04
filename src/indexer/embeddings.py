@@ -6,6 +6,30 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol, runtime_checkable
 
+# Model name mappings between providers
+_OPENROUTER_TO_OLLAMA: dict[str, str] = {
+    "qwen/qwen3-embedding-4b": "qwen3-embedding:4b",
+    "qwen/qwen3-embedding-8b": "qwen3-embedding:8b",
+    "qwen/qwen3-embedding-0.6b": "qwen3-embedding:0.6b",
+}
+_OLLAMA_TO_OPENROUTER: dict[str, str] = {v: k for k, v in _OPENROUTER_TO_OLLAMA.items()}
+
+
+def resolve_model_name(model: str | None, provider: str) -> str | None:
+    """Auto-map model names between OpenRouter and Ollama naming conventions.
+
+    Allows using a single EMBEDDING_MODEL value across providers:
+    - provider=ollama,    model=qwen/qwen3-embedding-4b  → qwen3-embedding:4b
+    - provider=openrouter, model=qwen3-embedding:4b      → qwen/qwen3-embedding-4b
+    """
+    if model is None:
+        return None
+    if provider == "ollama" and model in _OPENROUTER_TO_OLLAMA:
+        return _OPENROUTER_TO_OLLAMA[model]
+    if provider in ("openrouter", "openai") and model in _OLLAMA_TO_OPENROUTER:
+        return _OLLAMA_TO_OPENROUTER[model]
+    return model
+
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
 logger = logging.getLogger(__name__)
@@ -64,9 +88,10 @@ class OpenAIEmbeddings:
 
 class OpenRouterEmbeddings:
     """OpenRouter embeddings - OpenAI-compatible API with multiple models.
-    
+
     Popular models for Russian text:
-    - qwen/qwen3-embedding-8b (recommended)
+    - qwen/qwen3-embedding-4b (recommended, best quality/size ratio)
+    - qwen/qwen3-embedding-8b
     - openai/text-embedding-3-small
     - cohere/embed-multilingual-v3.0
     """
@@ -74,9 +99,9 @@ class OpenRouterEmbeddings:
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
     def __init__(
-        self, 
-        api_key: str, 
-        model: str = "qwen/qwen3-embedding-8b",
+        self,
+        api_key: str,
+        model: str = "qwen/qwen3-embedding-4b",
     ):
         from langchain_openai import OpenAIEmbeddings as LCOpenAIEmbeddings
 
@@ -109,14 +134,14 @@ class ParallelOpenRouterEmbeddings:
     RETRY_DELAY = 1.0  # seconds, will be multiplied by attempt number
 
     def __init__(
-        self, 
-        api_key: str, 
-        model: str = "qwen/qwen3-embedding-8b",
+        self,
+        api_key: str,
+        model: str = "qwen/qwen3-embedding-4b",
         concurrency: int = 10,
         batch_size: int = 1,
     ):
         """Initialize parallel OpenRouter embeddings.
-        
+
         Args:
             api_key: OpenRouter API key
             model: Model name
@@ -360,22 +385,22 @@ class JinaEmbeddings:
 
 class OllamaEmbeddings:
     """Ollama embeddings using local Ollama server.
-    
-    Supports any Ollama embedding model, recommended: qwen3-embedding:8b
-    - 8192 dimensions
-    - #1 MTEB multilingual (70.58)
-    - 100+ languages support
+
+    Supports any Ollama embedding model, recommended: qwen3-embedding:4b
+    - 2560 dimensions
+    - MTEB multilingual: 69.45 (1% below 8b, optimal quality/size ratio)
+    - 100+ languages support, best P@5 for 1C domain (0.547 vs 0.447 for 8b)
     """
 
     def __init__(
-        self, 
-        model: str = "qwen3-embedding:8b",
+        self,
+        model: str = "qwen3-embedding:4b",
         base_url: str = "http://localhost:11434",
     ):
         """Initialize Ollama embeddings.
-        
+
         Args:
-            model: Ollama model name (default: qwen3-embedding:8b)
+            model: Ollama model name (default: qwen3-embedding:4b)
             base_url: Ollama API endpoint (default: http://localhost:11434)
         """
         import httpx
@@ -475,6 +500,28 @@ class LocalEmbeddings:
         return self._embeddings.embed_query(text)
 
 
+class FallbackEmbeddings:
+    """Wraps two providers: tries primary first, falls back to secondary on failure."""
+
+    def __init__(self, primary: EmbeddingProvider, secondary: EmbeddingProvider):
+        self._primary = primary
+        self._secondary = secondary
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        try:
+            return self._primary.embed_documents(texts)
+        except Exception as e:
+            logger.warning(f"Primary provider failed ({type(e).__name__}: {e}), trying fallback")
+            return self._secondary.embed_documents(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        try:
+            return self._primary.embed_query(text)
+        except Exception as e:
+            logger.warning(f"Primary provider failed ({type(e).__name__}: {e}), trying fallback")
+            return self._secondary.embed_query(text)
+
+
 def create_embedding_provider(
     provider: str,
     api_key: str | None = None,
@@ -482,70 +529,93 @@ def create_embedding_provider(
     base_url: str | None = None,
     concurrency: int = 1,
     batch_size: int = 10,
+    fallback_provider: str | None = None,
+    fallback_api_key: str | None = None,
+    fallback_base_url: str | None = None,
 ) -> EmbeddingProvider:
     """Factory function to create embedding provider.
+
+    Model names are auto-mapped between providers:
+    - openrouter + "qwen3-embedding:4b"    → "qwen/qwen3-embedding-4b"
+    - ollama    + "qwen/qwen3-embedding-4b" → "qwen3-embedding:4b"
 
     Args:
         provider: One of "openai", "openrouter", "ollama", "cohere", "jina", "local"
         api_key: API key for the provider (not needed for "ollama" or "local")
-        model: Optional model name override
+        model: Optional model name override (auto-mapped between providers)
         base_url: Optional base URL override (for OpenAI-compatible APIs and Ollama)
         concurrency: Number of parallel requests (only for openrouter, default: 1)
         batch_size: Texts per API request (only for parallel openrouter, default: 10)
+        fallback_provider: Optional secondary provider if primary fails
+        fallback_api_key: API key for fallback provider
+        fallback_base_url: Base URL for fallback provider
 
     Returns:
-        EmbeddingProvider instance
+        EmbeddingProvider instance (wrapped with FallbackEmbeddings if fallback_provider set)
     """
+    resolved_model = resolve_model_name(model, provider)
+
     match provider:
         case "openai":
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is required for OpenAI embeddings")
-            return OpenAIEmbeddings(
+            primary = OpenAIEmbeddings(
                 api_key=api_key,
-                model=model or "text-embedding-3-small",
+                model=resolved_model or "text-embedding-3-small",
                 base_url=base_url,
             )
         case "openrouter":
             if not api_key:
                 raise ValueError("OPENROUTER_API_KEY is required for OpenRouter embeddings")
-            # Use parallel provider if concurrency > 1
             if concurrency > 1:
                 logger.info(f"Using ParallelOpenRouterEmbeddings with concurrency={concurrency}, batch_size={batch_size}")
-                return ParallelOpenRouterEmbeddings(
+                primary = ParallelOpenRouterEmbeddings(
                     api_key=api_key,
-                    model=model or "qwen/qwen3-embedding-8b",
+                    model=resolved_model or "qwen/qwen3-embedding-4b",
                     concurrency=concurrency,
                     batch_size=batch_size,
                 )
-            return OpenRouterEmbeddings(
-                api_key=api_key,
-                model=model or "qwen/qwen3-embedding-8b",
-            )
+            else:
+                primary = OpenRouterEmbeddings(
+                    api_key=api_key,
+                    model=resolved_model or "qwen/qwen3-embedding-4b",
+                )
         case "ollama":
-            return OllamaEmbeddings(
-                model=model or "qwen3-embedding:8b",
+            primary = OllamaEmbeddings(
+                model=resolved_model or "qwen3-embedding:4b",
                 base_url=base_url or "http://localhost:11434",
             )
         case "cohere":
             if not api_key:
                 raise ValueError("COHERE_API_KEY is required for Cohere embeddings")
-            return CohereEmbeddings(
+            primary = CohereEmbeddings(
                 api_key=api_key,
-                model=model or "embed-multilingual-v3.0",
+                model=resolved_model or "embed-multilingual-v3.0",
             )
         case "jina":
             if not api_key:
                 raise ValueError("JINA_API_KEY is required for Jina embeddings")
-            return JinaEmbeddings(
+            primary = JinaEmbeddings(
                 api_key=api_key,
-                model=model or "jina-embeddings-v3",
+                model=resolved_model or "jina-embeddings-v3",
             )
         case "local":
-            return LocalEmbeddings(
-                model_name=model or "intfloat/multilingual-e5-small",
+            primary = LocalEmbeddings(
+                model_name=resolved_model or "intfloat/multilingual-e5-small",
             )
         case _:
             raise ValueError(f"Unknown embedding provider: {provider}")
+
+    if fallback_provider:
+        secondary = create_embedding_provider(
+            provider=fallback_provider,
+            api_key=fallback_api_key,
+            model=model,  # pass original model, auto-mapping applied inside
+            base_url=fallback_base_url,
+        )
+        return FallbackEmbeddings(primary=primary, secondary=secondary)
+
+    return primary
 
 
 class ChromaDBEmbeddingFunction(EmbeddingFunction):

@@ -3,6 +3,7 @@
 Provides incremental indexing and hybrid search capabilities.
 """
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -437,7 +438,7 @@ class VectorIndexer:
                 all_chunks.extend(chunks)
                 
         elif parser_method == "code":
-            # Task-015: function-level chunking when parse_file_functions is available
+            # Function-level chunking when parse_file_functions is available (tree-sitter or regex)
             functions_indexed = False
             if hasattr(self.code_parser, "parse_file_functions"):
                 try:
@@ -449,6 +450,18 @@ class VectorIndexer:
                             body_lines = fn.body.count("\n") + 1
                             if body_lines < 5:
                                 continue
+
+                            # Function-level hash check: skip unchanged functions
+                            body_hash = hashlib.sha256(
+                                fn.body.encode("utf-8", errors="replace")
+                            ).hexdigest()
+                            stored_hash = self.file_tracker.get_function_hash(
+                                file_path, fn.name, self.COLLECTION_CODE
+                            )
+                            if stored_hash == body_hash:
+                                logger.debug(f"Skipping unchanged function: {fn.name} in {file_path}")
+                                continue
+
                             header = (
                                 f"{'Функция' if fn.type == 'Функция' else 'Процедура'} "
                                 f"{fn.name}({', '.join(fn.params)})"
@@ -456,19 +469,30 @@ class VectorIndexer:
                             if fn.is_export:
                                 header += " Экспорт"
                             content = f"{header}\n\n{fn.body}"
-                            chunks = self._chunk_document(
-                                content,
-                                {
-                                    "full_path": fn.module_path,
-                                    "object_type": "КодМодуля",
-                                    "name": fn.name,
-                                    "source_file": str(file_path),
-                                    "functions": fn.name,
-                                    "module_type": fn.module_type,
-                                    "is_export": fn.is_export,
-                                },
-                            )
-                            all_chunks.extend(chunks)
+
+                            metadata = {
+                                "full_path": fn.module_path,
+                                "object_type": "КодМодуля",
+                                "name": fn.name,
+                                "source_file": str(file_path),
+                                "functions": fn.name,
+                                "module_type": fn.module_type,
+                                "is_export": fn.is_export,
+                            }
+
+                            # Smart chunking: function = one chunk; only split if body > 2000 chars
+                            if len(fn.body) <= 2000:
+                                fn_chunks = [{"content": content, "metadata": {**metadata, "chunk_index": 0}}]
+                            else:
+                                fn_chunks = self._chunk_document(content, metadata)
+
+                            # Tag with function tracking info for post-indexing marking
+                            for chunk in fn_chunks:
+                                chunk["_function_path"] = file_path
+                                chunk["_function_name"] = fn.name
+                                chunk["_function_hash"] = body_hash
+
+                            all_chunks.extend(fn_chunks)
                 except Exception as e:
                     logger.warning(f"parse_file_functions failed for {file_path}: {e}, falling back")
                     functions_indexed = False
@@ -604,7 +628,21 @@ class VectorIndexer:
         # Mark all files as indexed after successful indexing
         for file_path in files_to_mark:
             self.file_tracker.mark_indexed(file_path, collection_name)
-                
+
+        # Mark function hashes for function-level tracking (tree-sitter path)
+        seen_functions: set[tuple] = set()
+        for chunk in chunks:
+            if "_function_path" in chunk:
+                key = (chunk["_function_path"], chunk["_function_name"])
+                if key not in seen_functions:
+                    seen_functions.add(key)
+                    self.file_tracker.mark_function_indexed(
+                        chunk["_function_path"],
+                        chunk["_function_name"],
+                        chunk["_function_hash"],
+                        collection_name,
+                    )
+
         return total_indexed
 
     def _parallel_collect_chunks(
@@ -865,5 +903,9 @@ class VectorIndexer:
         self.file_tracker.clear_collection(self.COLLECTION_METADATA)
         self.file_tracker.clear_collection(self.COLLECTION_CODE)
         self.file_tracker.clear_collection(self.COLLECTION_HELP)
+
+        self.file_tracker.clear_function_collection(self.COLLECTION_METADATA)
+        self.file_tracker.clear_function_collection(self.COLLECTION_CODE)
+        self.file_tracker.clear_function_collection(self.COLLECTION_HELP)
 
         logger.info("Cleared all indexed data")

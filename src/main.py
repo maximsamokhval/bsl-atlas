@@ -117,48 +117,51 @@ def init_services():
             f"SQLite: existing index has {existing.symbols} symbols, {existing.objects} objects"
         )
 
-    # --- ChromaDB vector layer ---
-    indexer = VectorIndexer(config)
+    # --- ChromaDB vector layer (full mode only) ---
+    if config.indexing_mode == "full":
+        indexer = VectorIndexer(config)
 
-    # Create search embedding provider (if different from indexing)
-    search_embedding_provider = None
-    logger.info(f"Indexing provider: {config.indexing_provider}, Search provider: {config.search_provider}")
-    if config.search_provider != config.indexing_provider:
-        logger.info(f"Creating separate search provider: {config.search_provider}")
-        search_base_url = config.ollama_base_url if config.search_provider == "ollama" else config.openai_api_base
-        search_model = config.ollama_model if config.search_provider == "ollama" else config.embedding_model
+        # Create search embedding provider (if different from indexing)
+        search_embedding_provider = None
+        logger.info(f"Indexing provider: {config.indexing_provider}, Search provider: {config.search_provider}")
+        if config.search_provider != config.indexing_provider:
+            logger.info(f"Creating separate search provider: {config.search_provider}")
+            search_base_url = config.ollama_base_url if config.search_provider == "ollama" else config.openai_api_base
+            search_model = config.ollama_model if config.search_provider == "ollama" else config.embedding_model
 
-        search_embedding_provider = create_embedding_provider(
-            provider=config.search_provider,
-            api_key=config.get_api_key(config.search_provider),
-            model=search_model,
-            base_url=search_base_url,
+            search_embedding_provider = create_embedding_provider(
+                provider=config.search_provider,
+                api_key=config.get_api_key(config.search_provider),
+                model=search_model,
+                base_url=search_base_url,
+            )
+
+        search = HybridSearch(
+            metadata_collection=indexer.metadata_collection,
+            code_collection=indexer.code_collection,
+            help_collection=indexer.help_collection,
+            search_embedding_provider=search_embedding_provider,
         )
 
-    search = HybridSearch(
-        metadata_collection=indexer.metadata_collection,
-        code_collection=indexer.code_collection,
-        help_collection=indexer.help_collection,
-        search_embedding_provider=search_embedding_provider,
-    )
+        if config.chromadb_auto_index:
+            sqlite_has_data = sqlite_store.has_data()
+            logger.info(f"CHROMADB_AUTO_INDEX=true, starting ChromaDB indexing in background (sqlite_enabled={sqlite_has_data})...")
 
-    if config.chromadb_auto_index:
-        sqlite_has_data = sqlite_store.has_data()
-        logger.info(f"CHROMADB_AUTO_INDEX=true, starting ChromaDB indexing in background (sqlite_enabled={sqlite_has_data})...")
+            def _chromadb_background():
+                try:
+                    indexer.index_directory(sqlite_enabled=sqlite_has_data)
+                    logger.info("ChromaDB background indexing complete")
+                except Exception as e:
+                    logger.error(f"ChromaDB background indexing failed: {e}", exc_info=True)
 
-        def _chromadb_background():
-            try:
-                indexer.index_directory(sqlite_enabled=sqlite_has_data)
-                logger.info("ChromaDB background indexing complete")
-            except Exception as e:
-                logger.error(f"ChromaDB background indexing failed: {e}", exc_info=True)
+            thread = threading.Thread(target=_chromadb_background, daemon=True)
+            thread.start()
+        else:
+            logger.info("CHROMADB_AUTO_INDEX=false, skipping ChromaDB indexing at startup")
 
-        thread = threading.Thread(target=_chromadb_background, daemon=True)
-        thread.start()
+        logger.info("Services initialized (SQLite ready, ChromaDB active)")
     else:
-        logger.info("CHROMADB_AUTO_INDEX=false, skipping ChromaDB indexing at startup")
-
-    logger.info("Services initialized (SQLite ready, ChromaDB indexing in background)")
+        logger.info("INDEXING_MODE=fast: ChromaDB disabled. Semantic tools unavailable. SQLite ready.")
 
 
 @asynccontextmanager
@@ -389,6 +392,11 @@ def metadatasearch(query: str, limit: int = 10) -> list[dict]:
 # Semantic tools — ChromaDB layer
 # ---------------------------------------------------------------------------
 
+_FAST_MODE_MSG = (
+    "Semantic search requires INDEXING_MODE=full. "
+    "Current mode: fast. SQLite search covers 80% of queries."
+)
+
 
 @mcp.tool()
 def codesearch(query: str, limit: int = 10) -> list[dict]:
@@ -401,6 +409,8 @@ def codesearch(query: str, limit: int = 10) -> list[dict]:
     Returns:
         List of matching code fragments with module path and content
     """
+    if config.indexing_mode != "full":
+        return [{"info": _FAST_MODE_MSG}]
     if not search:
         return [{"error": "Search service not initialized"}]
 
@@ -430,6 +440,8 @@ def helpsearch(query: str, limit: int = 10) -> list[dict]:
     Returns:
         List of matching documentation sections
     """
+    if config.indexing_mode != "full":
+        return [{"info": _FAST_MODE_MSG}]
     if not search:
         return [{"error": "Search service not initialized"}]
 
@@ -466,6 +478,8 @@ def search_code_filtered(
     Returns:
         List of matching code fragments
     """
+    if config.indexing_mode != "full":
+        return [{"info": _FAST_MODE_MSG}]
     if not search:
         return [{"error": "Search service not initialized"}]
 
@@ -549,6 +563,8 @@ def stats() -> dict:
             "attributes": s.attributes,
         }
 
+    result["indexing_mode"] = config.indexing_mode
+
     if indexer:
         chroma = indexer.get_stats()
         result["chromadb"] = chroma["collections"]
@@ -568,7 +584,7 @@ async def health_check(request):
     """Health check endpoint."""
     from starlette.responses import JSONResponse
 
-    response: dict = {"status": "healthy"}
+    response: dict = {"status": "healthy", "indexing_mode": config.indexing_mode}
 
     if sqlite_store:
         s = sqlite_store.stats()
@@ -579,7 +595,7 @@ async def health_check(request):
         response["chromadb"] = chroma["collections"]
         response["embedding_provider"] = config.embedding_provider
 
-    if not indexer and not sqlite_store:
+    if not sqlite_store:
         return JSONResponse({"status": "initializing"}, status_code=503)
 
     return JSONResponse(response)
@@ -597,7 +613,7 @@ async def reindex_endpoint(request):
     from starlette.background import BackgroundTask
     from starlette.responses import JSONResponse
 
-    if not indexer and not sqlite_store:
+    if not sqlite_store:
         return JSONResponse({"error": "Services not initialized"}, status_code=503)
 
     try:

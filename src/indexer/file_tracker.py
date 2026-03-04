@@ -1,4 +1,4 @@
-"""File tracking for incremental indexing.
+﻿"""File tracking for incremental indexing.
 
 Uses SQLite to track file hashes and detect changes.
 """
@@ -70,13 +70,25 @@ class FileTracker:
                 """)
             
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_collection 
+                CREATE INDEX IF NOT EXISTS idx_collection
                 ON file_hashes(collection)
             """)
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_status 
+                CREATE INDEX IF NOT EXISTS idx_status
                 ON file_hashes(status)
             """)
+
+            # Function-level hash tracking for smart chunking
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS function_hashes (
+                    key TEXT NOT NULL,
+                    collection TEXT NOT NULL,
+                    hash TEXT NOT NULL,
+                    indexed_at TIMESTAMP NOT NULL,
+                    PRIMARY KEY (key, collection)
+                )
+            """)
+
             conn.commit()
 
     def _compute_hash(self, file_path: Path) -> str:
@@ -271,6 +283,61 @@ class FileTracker:
             )
             conn.commit()
         logger.info(f"Cleared all entries for collection: {collection}")
+
+    def get_function_hash(self, file_path: Path, function_name: str, collection: str) -> str | None:
+        """Get stored hash for a specific function body.
+
+        Args:
+            file_path: Path to the file containing the function
+            function_name: Function/procedure name
+            collection: Collection name
+
+        Returns:
+            Stored SHA-256 hash of function body, or None if not tracked
+        """
+        key = f"{file_path.resolve()}:{function_name}"
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT hash FROM function_hashes WHERE key = ? AND collection = ?",
+                (key, collection),
+            )
+            row = cursor.fetchone()
+        return row[0] if row else None
+
+    def mark_function_indexed(self, file_path: Path, function_name: str, body_hash: str, collection: str):
+        """Mark a function as indexed with its body hash.
+
+        Args:
+            file_path: Path to the file containing the function
+            function_name: Function/procedure name
+            body_hash: SHA-256 hash of function body
+            collection: Collection name
+        """
+        key = f"{file_path.resolve()}:{function_name}"
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO function_hashes (key, collection, hash, indexed_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (key, collection, body_hash, now),
+            )
+            conn.commit()
+
+    def clear_function_collection(self, collection: str):
+        """Clear all function hash entries for a collection.
+
+        Args:
+            collection: Collection name to clear
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM function_hashes WHERE collection = ?",
+                (collection,),
+            )
+            conn.commit()
+        logger.info(f"Cleared function hashes for collection: {collection}")
 
     def get_stats(self) -> dict[str, dict[str, int]]:
         """Get statistics about tracked files.
