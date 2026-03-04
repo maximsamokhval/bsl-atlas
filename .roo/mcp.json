@@ -1,0 +1,41 @@
+{
+	"mcpServers": {
+		"filesystem": {
+			"command": "npx",
+			"args": [
+				"-y",
+				"@modelcontextprotocol/server-filesystem",
+				"/Users/samokhval/dev/work/bsl-atlas_deepseek"
+			]
+		},
+		"sequentialthinking": {
+			"command": "npx",
+			"args": [
+				"-y",
+				"@modelcontextprotocol/server-sequential-thinking"
+			]
+		},
+		"git": {
+			"command": "uvx",
+			"args": [
+				"mcp-server-git",
+				"--repository",
+				"/Users/samokhval/dev/work/bsl-atlas_deepseek"
+			],
+			"alwaysAllow": [
+				"git_status",
+				"git_branch",
+				"git_checkout",
+				"git_log",
+				"git_add"
+			]
+		},
+		"memory": {
+			"command": "npx",
+			"args": [
+				"-y",
+				"@modelcontextprotocol/server-memory"
+			]
+		}
+	}
+}
