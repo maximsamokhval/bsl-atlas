@@ -512,7 +512,7 @@ def reindex(rebuild_sqlite: bool = True, force_chromadb: bool = False) -> dict:
     """Re-index the 1C codebase.
 
     SQLite rebuild is instant. ChromaDB reindex uses LOCAL embedding model
-    (REINDEX_PROVIDER, default: ollama/qwen3-embedding:8b) — no cloud API calls.
+    (REINDEX_PROVIDER, default: ollama/qwen3-embedding:4b) — no cloud API calls.
     Cloud provider (INDEXING_PROVIDER) is only used for initial bulk indexing at startup.
 
     Args:

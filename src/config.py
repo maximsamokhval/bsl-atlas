@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 EmbeddingProvider = Literal["openai", "openrouter", "ollama", "cohere", "jina", "local"]
+IndexingMode = Literal["fast", "full"]
 
 
 @dataclass
@@ -38,7 +39,7 @@ class Config:
 
     # Ollama settings (optional, for hybrid setup)
     ollama_base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-    ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3-embedding:8b"))
+    ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3-embedding:4b"))
     
     # API Keys
     openai_api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
@@ -71,6 +72,11 @@ class Config:
     sqlite_db_path: Path = field(default_factory=lambda: Path(os.getenv("SQLITE_DB_PATH", "/data/bsl_index.db")))
     sqlite_auto_rebuild: bool = field(default_factory=lambda: os.getenv("SQLITE_AUTO_REBUILD", "true").lower() == "true")
 
+    # Indexing mode: fast (SQLite only, no ChromaDB) or full (SQLite + ChromaDB vectors)
+    indexing_mode: IndexingMode = field(
+        default_factory=lambda: os.getenv("INDEXING_MODE", "fast")  # type: ignore
+    )
+
     # ChromaDB indexing control (separate from SQLite)
     # CHROMADB_AUTO_INDEX defaults to AUTO_INDEX for backward compatibility
     chromadb_auto_index: bool = field(
@@ -101,24 +107,26 @@ class Config:
     def validate(self) -> list[str]:
         """Validate configuration, return list of errors."""
         errors = []
-        
-        # Validate indexing provider
-        if self.indexing_provider not in ("ollama", "local") and not self.get_api_key(self.indexing_provider):
-            errors.append(
-                f"API key required for indexing provider '{self.indexing_provider}'. "
-                f"Set {self.indexing_provider.upper()}_API_KEY environment variable."
-            )
-        
-        # Validate search provider
-        if self.search_provider not in ("ollama", "local") and not self.get_api_key(self.search_provider):
-            errors.append(
-                f"API key required for search provider '{self.search_provider}'. "
-                f"Set {self.search_provider.upper()}_API_KEY environment variable."
-            )
-        
+
+        # In fast mode, skip ChromaDB provider validation (not used)
+        if self.indexing_mode == "full":
+            # Validate indexing provider
+            if self.indexing_provider not in ("ollama", "local") and not self.get_api_key(self.indexing_provider):
+                errors.append(
+                    f"API key required for indexing provider '{self.indexing_provider}'. "
+                    f"Set {self.indexing_provider.upper()}_API_KEY environment variable."
+                )
+
+            # Validate search provider
+            if self.search_provider not in ("ollama", "local") and not self.get_api_key(self.search_provider):
+                errors.append(
+                    f"API key required for search provider '{self.search_provider}'. "
+                    f"Set {self.search_provider.upper()}_API_KEY environment variable."
+                )
+
         if not self.source_path.exists():
             errors.append(f"Source path does not exist: {self.source_path}")
-        
+
         return errors
 
 

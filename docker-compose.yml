@@ -24,11 +24,16 @@ services:
 
       # --- Ollama (optional, for hybrid setup) ---
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3-embedding:8b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3-embedding:4b}
+
+      # --- Indexing mode ---
+      # fast: SQLite only, no API key needed (default)
+      # full: SQLite + ChromaDB vectors (requires embedding provider + API key)
+      - INDEXING_MODE=${INDEXING_MODE:-fast}
 
       # --- Indexing settings ---
       - AUTO_INDEX=${AUTO_INDEX:-true}
-      - CHROMADB_AUTO_INDEX=${CHROMADB_AUTO_INDEX:-true}
+      - CHROMADB_AUTO_INDEX=${CHROMADB_AUTO_INDEX:-false}
       - CHUNK_SIZE=${CHUNK_SIZE:-1000}
       - CHUNK_OVERLAP=${CHUNK_OVERLAP:-100}
       - EMBEDDING_CONCURRENCY=${EMBEDDING_CONCURRENCY:-5}

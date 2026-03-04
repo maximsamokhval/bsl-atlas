@@ -16,7 +16,7 @@ def test_config(tmp_path):
     config.source_path = Path("tests/fixtures/test_project")
     config.chroma_path = tmp_path / "chroma"
     config.embedding_provider = "openrouter"
-    config.embedding_model = "qwen3-embedding-8b"
+    config.embedding_model = "qwen3-embedding-4b"
     config.auto_index = False
     return config
 

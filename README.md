@@ -10,11 +10,25 @@ MCP-сервер для 1С:Предприятие — векторный пои
 - **Семантический поиск** (ChromaDB, векторный): найти код по описанию — "как реализовано проведение", "где логируются ошибки"
 - **Два слоя**: SQLite пересобирается за секунды при старте; ChromaDB индексируется один раз в фоне через провайдер эмбеддингов на ваш выбор
 
+## Два режима работы
+
+| | **fast** (по умолчанию) | **full** |
+|---|---|---|
+| **Что работает** | Структурный поиск: функции, граф вызовов, метаданные | Всё из fast + семантический поиск (ChromaDB) |
+| **API-ключ** | Не нужен | Нужен (OpenRouter, OpenAI, Ollama и др.) |
+| **Запуск** | Мгновенно | SQLite сразу + векторизация в фоне |
+| **Использование** | `INDEXING_MODE=fast` (или не задавать) | `INDEXING_MODE=full` |
+
+**fast** — хороший старт: структурный поиск покрывает большинство задач. Переключитесь на **full** когда понадобится `codesearch` / `helpsearch`.
+
 ## Что нужно
 
+**Режим fast:**
 - Docker + Docker Compose
 - 1С:Предприятие 8.3 (Конфигуратор для выгрузки конфигурации)
-- API-ключ OpenRouter — [openrouter.ai/keys](https://openrouter.ai/keys)
+
+**Режим full (дополнительно):**
+- API-ключ OpenRouter — [openrouter.ai/keys](https://openrouter.ai/keys) (или другой провайдер)
 
 ## Быстрый старт
 
@@ -36,7 +50,13 @@ mv .env.example .env
 
 ```env
 SOURCE_PATH=C:\my-config     # папка с выгрузкой (содержит cf/)
-OPENROUTER_API_KEY=sk-or-v1-...
+
+# Режим fast (по умолчанию) — API-ключ не нужен:
+INDEXING_MODE=fast
+
+# Режим full — добавьте API-ключ:
+# INDEXING_MODE=full
+# OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
 ### 3. Запустить
@@ -45,7 +65,8 @@ OPENROUTER_API_KEY=sk-or-v1-...
 docker compose up -d
 ```
 
-Образ скачается автоматически с Docker Hub (~500 МБ, один раз). SQLite проиндексируется сразу, ChromaDB векторизует в фоне — прогресс: `http://localhost:8000/health`.
+Образ скачается автоматически с Docker Hub (~500 МБ, один раз). SQLite проиндексируется сразу.
+В режиме **full** ChromaDB векторизует в фоне — прогресс: `http://localhost:8000/health`.
 
 ### 4. Подключить к Claude
 
@@ -113,6 +134,15 @@ docker compose up -d
 ## Настройка
 
 Все параметры задаются через переменные окружения в `.env`.
+
+### Режим индексации
+
+```env
+INDEXING_MODE=fast   # только SQLite, без API-ключа (по умолчанию)
+INDEXING_MODE=full   # SQLite + ChromaDB векторы, нужен провайдер эмбеддингов
+```
+
+В режиме `fast` семантические инструменты (`codesearch`, `helpsearch`, `search_code_filtered`) возвращают подсказку включить `INDEXING_MODE=full`.
 
 ### Провайдеры эмбеддингов
 
