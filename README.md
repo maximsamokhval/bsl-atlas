@@ -136,14 +136,16 @@ SEARCH_PROVIDER=ollama          # бесплатный локальный инф
 REINDEX_PROVIDER=ollama         # бесплатный локальный инференс для переиндексации
 
 OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_MODEL=qwen3-embedding:8b  # лучшая модель для русского/BSL
+OLLAMA_MODEL=qwen3-embedding:4b  # лучшая модель для русского/BSL
 ```
 
-`qwen3-embedding:8b` требует ~5 ГБ RAM. Скачать: `ollama pull qwen3-embedding:8b`
+`qwen3-embedding:4b` требует ~2.5 ГБ RAM. Скачать: `ollama pull qwen3-embedding:4b`
+
+> **Бенчмарк:** qwen3-embedding:4b показала результаты, сопоставимые с полноразмерной моделью, при вдвое меньшем потреблении памяти — оптимальный выбор для большинства случаев.
 
 ### Модель OpenRouter
 
-По умолчанию используется `qwen/qwen3-embedding-8b` — оптимизирована для русского языка и кириллического кода. Переопределить:
+По умолчанию используется `qwen/qwen3-embedding-4b` — оптимизирована для русского языка и кириллического кода. Переопределить:
 
 ```env
 EMBEDDING_MODEL=openai/text-embedding-3-small
