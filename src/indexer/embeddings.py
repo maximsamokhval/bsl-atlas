@@ -1,10 +1,10 @@
 ﻿"""Embedding providers abstraction with cloud API support."""
 
-import asyncio
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol, runtime_checkable
+
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
 # Model name mappings between providers
 _OPENROUTER_TO_OLLAMA: dict[str, str] = {
@@ -30,7 +30,6 @@ def resolve_model_name(model: str | None, provider: str) -> str | None:
         return _OLLAMA_TO_OPENROUTER[model]
     return model
 
-from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +49,13 @@ class EmbeddingProvider(Protocol):
 
 class OpenAIEmbeddings:
     """OpenAI embeddings using text-embedding-3-small.
-    
+
     Also supports OpenAI-compatible APIs via base_url parameter.
     """
 
     def __init__(
-        self, 
-        api_key: str, 
+        self,
+        api_key: str,
         model: str = "text-embedding-3-small",
         base_url: str | None = None,
     ):
@@ -64,16 +63,16 @@ class OpenAIEmbeddings:
 
         self.model = model
         self.base_url = base_url
-        
+
         kwargs = {
             "api_key": api_key,
             "model": model,
         }
         if base_url:
             kwargs["base_url"] = base_url
-            
+
         self._embeddings = LCOpenAIEmbeddings(**kwargs)
-        
+
         provider_info = f" via {base_url}" if base_url else ""
         logger.info(f"Initialized OpenAI embeddings with model: {model}{provider_info}")
 
@@ -124,7 +123,7 @@ class OpenRouterEmbeddings:
 
 class ParallelOpenRouterEmbeddings:
     """OpenRouter embeddings with parallel request processing.
-    
+
     Sends multiple embedding requests in parallel to speed up indexing.
     Uses ThreadPoolExecutor for parallel HTTP requests with retry logic.
     """
@@ -149,13 +148,13 @@ class ParallelOpenRouterEmbeddings:
             batch_size: Texts per single API request (default: 1)
         """
         import httpx
-        
+
         self.api_key = api_key
         self.model = model
         self.concurrency = concurrency
         self.batch_size = batch_size
         self._client = httpx.Client(timeout=120.0)
-        
+
         logger.info(
             f"Initialized ParallelOpenRouter embeddings: model={model}, "
             f"concurrency={concurrency}, batch_size={batch_size}"
@@ -164,7 +163,7 @@ class ParallelOpenRouterEmbeddings:
     def _embed_single_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a single batch of texts via API with retry logic."""
         import time
-        
+
         last_error = None
         for attempt in range(self.MAX_RETRIES):
             try:
@@ -181,18 +180,22 @@ class ParallelOpenRouterEmbeddings:
                 )
                 response.raise_for_status()
                 data = response.json()
-                
+
                 # Validate response format
                 if "data" not in data:
-                    error_msg = f"Invalid API response format: missing 'data' field. Response: {data}"
+                    error_msg = (
+                        f"Invalid API response format: missing 'data' field. Response: {data}"
+                    )
                     logger.error(error_msg)
                     raise ValueError(error_msg)
-                
+
                 if not isinstance(data["data"], list) or len(data["data"]) == 0:
-                    error_msg = f"Invalid API response: 'data' is not a non-empty list. Response: {data}"
+                    error_msg = (
+                        f"Invalid API response: 'data' is not a non-empty list. Response: {data}"
+                    )
                     logger.error(error_msg)
                     raise ValueError(error_msg)
-                
+
                 # Sort by index to maintain order
                 sorted_data = sorted(data["data"], key=lambda x: x["index"])
                 embeddings = [item["embedding"] for item in sorted_data]
@@ -201,7 +204,7 @@ class ParallelOpenRouterEmbeddings:
                         f"API returned {len(embeddings)} embeddings for {len(texts)} texts"
                     )
                 return embeddings
-                
+
             except Exception as e:
                 last_error = e
                 # Log detailed error information
@@ -212,66 +215,63 @@ class ParallelOpenRouterEmbeddings:
                     "error_message": str(e),
                     "batch_size": len(texts),
                 }
-                
+
                 # Add response details if available
-                if hasattr(e, 'response') and e.response is not None:
+                if hasattr(e, "response") and e.response is not None:
                     try:
                         error_details["status_code"] = e.response.status_code
                         error_details["response_body"] = e.response.text[:500]  # First 500 chars
-                    except:
+                    except Exception:  # nosec B110
                         pass
-                
+
                 logger.error(f"Error embedding batch: {error_details}")
-                
+
                 if attempt < self.MAX_RETRIES - 1:
                     # Exponential backoff: 1s, 2s, 4s
-                    delay = self.RETRY_DELAY * (2 ** attempt)
+                    delay = self.RETRY_DELAY * (2**attempt)
                     logger.warning(
                         f"Retry {attempt + 1}/{self.MAX_RETRIES} after {type(e).__name__}. "
                         f"Waiting {delay}s..."
                     )
                     time.sleep(delay)
-        
+
         # All retries failed - log final error
         logger.error(
             f"Failed to embed batch after {self.MAX_RETRIES} retries. "
             f"Last error: {type(last_error).__name__}: {last_error}"
         )
-        raise last_error
+        raise last_error  # type: ignore[misc]
 
     def _split_into_batches(self, texts: list[str]) -> list[list[str]]:
         """Split texts into batches."""
-        return [
-            texts[i:i + self.batch_size] 
-            for i in range(0, len(texts), self.batch_size)
-        ]
+        return [texts[i : i + self.batch_size] for i in range(0, len(texts), self.batch_size)]
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed multiple documents in parallel.
-        
+
         Splits texts into batches and processes them concurrently.
         """
         if not texts:
             return []
-        
+
         batches = self._split_into_batches(texts)
         total_batches = len(batches)
-        
+
         if total_batches == 1:
             # Single batch, no need for parallelism
             return self._embed_single_batch(texts)
-        
+
         logger.info(
             f"Processing {len(texts)} texts in {total_batches} batches "
             f"with concurrency={self.concurrency}"
         )
-        
+
         # Use ThreadPoolExecutor for parallel requests
         results = [None] * total_batches
-        
+
         def process_batch(idx: int, batch: list[str]) -> tuple[int, list[list[float]] | None]:
             """Process a single batch with graceful degradation.
-            
+
             Returns:
                 Tuple of (batch_index, embeddings or None if failed)
             """
@@ -285,19 +285,18 @@ class ParallelOpenRouterEmbeddings:
                 )
                 # Return None instead of raising - allows other batches to continue
                 return (idx, None)
-        
+
         with ThreadPoolExecutor(max_workers=self.concurrency) as executor:
             futures = [
-                executor.submit(process_batch, idx, batch)
-                for idx, batch in enumerate(batches)
+                executor.submit(process_batch, idx, batch) for idx, batch in enumerate(batches)
             ]
-            
+
             for future in futures:
                 idx, embeddings = future.result()
-                results[idx] = embeddings
-        
+                results[idx] = embeddings  # type: ignore[assignment]
+
         # Flatten results maintaining order, skip failed batches
-        all_embeddings = []
+        all_embeddings = []  # type: ignore[var-annotated]
         failed_batches = []
         for idx, batch_embeddings in enumerate(results):
             if batch_embeddings is None:
@@ -306,7 +305,7 @@ class ParallelOpenRouterEmbeddings:
                 all_embeddings.extend([None] * len(batches[idx]))
             else:
                 all_embeddings.extend(batch_embeddings)
-        
+
         if failed_batches:
             logger.warning(
                 f"Completed with {len(failed_batches)} failed batches: {failed_batches}. "
@@ -314,7 +313,7 @@ class ParallelOpenRouterEmbeddings:
             )
         else:
             logger.info(f"Successfully completed embedding {len(all_embeddings)} texts")
-        
+
         return all_embeddings
 
     def embed_query(self, text: str) -> list[float]:
@@ -404,17 +403,17 @@ class OllamaEmbeddings:
             base_url: Ollama API endpoint (default: http://localhost:11434)
         """
         import httpx
-        
+
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_url = f"{self.base_url}/api/embeddings"
         self._client = httpx.Client(timeout=120.0)
-        
+
         logger.info(f"Initialized Ollama embeddings: model={model}, url={base_url}")
-    
+
     def _call_api(self, text: str) -> list[float]:
         """Call Ollama API for a single text embedding.
-        
+
         Ollama API format:
         Request: {"model": "qwen3-embedding:8b", "prompt": "text"}
         Response: {"embedding": [0.1, 0.2, ...]}
@@ -429,41 +428,41 @@ class OllamaEmbeddings:
             )
             response.raise_for_status()
             data = response.json()
-            
+
             if "embedding" not in data:
                 error_msg = f"Invalid Ollama response: missing 'embedding' field. Response: {data}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
-            
+
             return data["embedding"]
-            
+
         except Exception as e:
             logger.error(f"Error calling Ollama API: {type(e).__name__}: {e}")
             raise
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed multiple documents.
-        
+
         Note: Ollama API processes one text at a time, so we call it sequentially.
         For faster indexing, use OpenRouter with parallel processing.
         """
         if not texts:
             return []
-        
+
         embeddings = []
         for i, text in enumerate(texts):
             try:
                 embedding = self._call_api(text)
                 embeddings.append(embedding)
-                
+
                 if (i + 1) % 10 == 0:
                     logger.debug(f"Embedded {i + 1}/{len(texts)} documents via Ollama")
-                    
+
             except Exception as e:
                 logger.error(f"Failed to embed document {i}: {e}")
                 # Add None for failed embedding to maintain order
-                embeddings.append(None)
-        
+                embeddings.append(None)  # type: ignore[arg-type]
+
         successful = len([e for e in embeddings if e is not None])
         logger.info(f"Ollama embedded {successful}/{len(texts)} documents")
         return embeddings
@@ -490,6 +489,37 @@ class LocalEmbeddings:
                 "sentence-transformers not installed. "
                 "Install with: pip install sentence-transformers"
             )
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed multiple documents."""
+        return self._embeddings.embed_documents(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed a single query."""
+        return self._embeddings.embed_query(text)
+
+
+class DeepinfraEmbeddings:
+    """Deepinfra embeddings using Qwen3‑Embedding‑4B via OpenAI‑compatible API."""
+
+    DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/inference"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "Qwen/Qwen3-Embedding-4B",
+        base_url: str | None = None,
+    ):
+        from langchain_openai import OpenAIEmbeddings as LCOpenAIEmbeddings
+
+        self.model = model
+        self.base_url = base_url or self.DEEPINFRA_BASE_URL
+        self._embeddings = LCOpenAIEmbeddings(
+            api_key=api_key or "no-key-required",  # Deepinfra allows anonymous requests
+            model=model,
+            base_url=self.base_url,
+        )
+        logger.info(f"Initialized Deepinfra embeddings with model: {model}")
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed multiple documents."""
@@ -555,6 +585,7 @@ def create_embedding_provider(
     """
     resolved_model = resolve_model_name(model, provider)
 
+    primary: EmbeddingProvider
     match provider:
         case "openai":
             if not api_key:
@@ -568,7 +599,9 @@ def create_embedding_provider(
             if not api_key:
                 raise ValueError("OPENROUTER_API_KEY is required for OpenRouter embeddings")
             if concurrency > 1:
-                logger.info(f"Using ParallelOpenRouterEmbeddings with concurrency={concurrency}, batch_size={batch_size}")
+                logger.info(
+                    f"Using ParallelOpenRouterEmbeddings with concurrency={concurrency}, batch_size={batch_size}"
+                )
                 primary = ParallelOpenRouterEmbeddings(
                     api_key=api_key,
                     model=resolved_model or "qwen/qwen3-embedding-4b",
@@ -598,6 +631,13 @@ def create_embedding_provider(
             primary = JinaEmbeddings(
                 api_key=api_key,
                 model=resolved_model or "jina-embeddings-v3",
+            )
+        case "deepinfra":
+            # Deepinfra allows anonymous requests (api_key can be None)
+            primary = DeepinfraEmbeddings(
+                api_key=api_key,
+                model=resolved_model or "Qwen/Qwen3-Embedding-4B",
+                base_url=base_url,
             )
         case "local":
             primary = LocalEmbeddings(
