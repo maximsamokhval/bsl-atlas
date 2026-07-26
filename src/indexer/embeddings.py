@@ -19,8 +19,8 @@ def resolve_model_name(model: str | None, provider: str) -> str | None:
     """Auto-map model names between OpenRouter and Ollama naming conventions.
 
     Allows using a single EMBEDDING_MODEL value across providers:
-    - provider=ollama,    model=qwen/qwen3-embedding-4b  → qwen3-embedding:4b
-    - provider=openrouter, model=qwen3-embedding:4b      → qwen/qwen3-embedding-4b
+    - provider=ollama,    model=qwen/qwen3-embedding-8b  → qwen3-embedding:8b
+    - provider=openrouter, model=qwen3-embedding:8b      → qwen/qwen3-embedding-8b
     """
     if model is None:
         return None
@@ -94,8 +94,8 @@ class OpenRouterEmbeddings:
     """OpenRouter embeddings - OpenAI-compatible API with multiple models.
 
     Popular models for Russian text:
-    - qwen/qwen3-embedding-4b (recommended, best quality/size ratio)
-    - qwen/qwen3-embedding-8b
+    - qwen/qwen3-embedding-8b (recommended)
+    - qwen/qwen3-embedding-4b
     - openai/text-embedding-3-small
     - cohere/embed-multilingual-v3.0
     """
@@ -105,7 +105,7 @@ class OpenRouterEmbeddings:
     def __init__(
         self,
         api_key: str,
-        model: str = "qwen/qwen3-embedding-4b",
+        model: str = "qwen/qwen3-embedding-8b",
     ):
         from langchain_openai import OpenAIEmbeddings as LCOpenAIEmbeddings
 
@@ -142,7 +142,7 @@ class ParallelOpenRouterEmbeddings:
     def __init__(
         self,
         api_key: str,
-        model: str = "qwen/qwen3-embedding-4b",
+        model: str = "qwen/qwen3-embedding-8b",
         concurrency: int = 10,
         batch_size: int = 1,
     ):
@@ -392,7 +392,7 @@ class JinaEmbeddings:
 class OllamaEmbeddings:
     """Ollama embeddings using local Ollama server.
 
-    Supports any Ollama embedding model, recommended: qwen3-embedding:4b
+    Supports any Ollama embedding model, recommended: qwen3-embedding:8b
     - 2560 dimensions
     - MTEB multilingual: 69.45 (1% below 8b, optimal quality/size ratio)
     - 100+ languages support, best P@5 for 1C domain (0.547 vs 0.447 for 8b)
@@ -405,14 +405,14 @@ class OllamaEmbeddings:
 
     def __init__(
         self,
-        model: str = "qwen3-embedding:4b",
+        model: str = "qwen3-embedding:8b",
         base_url: str = "http://localhost:11434",
         batch_size: int = DEFAULT_BATCH_SIZE,
     ):
         """Initialize Ollama embeddings.
 
         Args:
-            model: Ollama model name (default: qwen3-embedding:4b)
+            model: Ollama model name (default: qwen3-embedding:8b)
             base_url: Ollama API endpoint (default: http://localhost:11434)
             batch_size: Texts per /api/embed request (default: 256)
         """
@@ -564,8 +564,8 @@ def create_embedding_provider(
     """Factory function to create embedding provider.
 
     Model names are auto-mapped between providers:
-    - openrouter + "qwen3-embedding:4b"    → "qwen/qwen3-embedding-4b"
-    - ollama    + "qwen/qwen3-embedding-4b" → "qwen3-embedding:4b"
+    - openrouter + "qwen3-embedding:8b"    → "qwen/qwen3-embedding-8b"
+    - ollama    + "qwen/qwen3-embedding-8b" → "qwen3-embedding:8b"
 
     Args:
         provider: One of "openai", "openrouter", "ollama", "cohere", "jina", "local"
@@ -599,18 +599,18 @@ def create_embedding_provider(
                 logger.info(f"Using ParallelOpenRouterEmbeddings with concurrency={concurrency}, batch_size={batch_size}")
                 primary = ParallelOpenRouterEmbeddings(
                     api_key=api_key,
-                    model=resolved_model or "qwen/qwen3-embedding-4b",
+                    model=resolved_model or "qwen/qwen3-embedding-8b",
                     concurrency=concurrency,
                     batch_size=batch_size,
                 )
             else:
                 primary = OpenRouterEmbeddings(
                     api_key=api_key,
-                    model=resolved_model or "qwen/qwen3-embedding-4b",
+                    model=resolved_model or "qwen/qwen3-embedding-8b",
                 )
         case "ollama":
             primary = OllamaEmbeddings(
-                model=resolved_model or "qwen3-embedding:4b",
+                model=resolved_model or "qwen3-embedding:8b",
                 base_url=base_url or "http://localhost:11434",
                 batch_size=batch_size,
             )

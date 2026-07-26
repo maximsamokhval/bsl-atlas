@@ -39,7 +39,7 @@ class Config:
 
     # Ollama settings (optional, for hybrid setup)
     ollama_base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-    ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3-embedding:4b"))
+    ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3-embedding:8b"))
     
     # API Keys
     openai_api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))

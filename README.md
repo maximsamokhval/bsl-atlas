@@ -144,15 +144,74 @@ curl -X POST http://localhost:8000/reindex
 
 ## Embedding defaults
 
-- рекомендуемое семейство: `qwen3-embedding-4b`
-- OpenRouter: `qwen/qwen3-embedding-4b`
-- Ollama: `qwen3-embedding:4b`
+- рекомендуемое семейство: `qwen3-embedding-8b`
+- OpenRouter: `qwen/qwen3-embedding-8b`
+- Ollama: `qwen3-embedding:8b`
 
 ## LLM-стикеры функций
 
-Короткие описания функций хранятся в `symbols.doc_generated` и добавляются к
-карточке функции при следующей векторной индексации. Импортируйте JSON вида
-`{"42": "Проводит документ и формирует движения."}`:
+Стикер — короткое русское описание назначения BSL-функции: что она делает,
+что возвращает и какой имеет побочный эффект. Он помогает найти функцию по
+смыслу, когда точное имя неизвестно. Стикеры хранятся в
+`symbols.doc_generated` и добавляются к карточке функции при следующей
+векторной индексации.
+
+Генерировать стикеры стоит только для функций без хорошего `//`-комментария:
+экспортных методов, обработчиков, точек входа и центральных узлов графа.
+Формы и очевидные вспомогательные функции обычно не окупают стоимость генерации.
+
+### Пример генерации через Claude Haiku
+
+Актуальный закреплённый ID модели — `claude-haiku-4-5-20251001`.
+
+```python
+import json
+import os
+
+from anthropic import Anthropic
+
+client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+function = {
+    "id": 42,
+    "name": "ОбработкаПроведения",
+    "module": "Документы/ЗаказКлиента/Ext/ObjectModule.bsl",
+    "signature": "Процедура ОбработкаПроведения(Отказ, РежимПроведения)",
+    "body": "Движения.Взаиморасчеты.Записать();",
+}
+
+response = client.messages.create(
+    model="claude-haiku-4-5-20251001",
+    temperature=0,
+    max_tokens=200,
+    system=(
+        "Создай один русский стикер для поиска по BSL-коду. "
+        "Укажи назначение, возвращаемое значение и побочный эффект, если они видны. "
+        "Не выдумывай объекты и бизнес-смысл. Не более 160 символов. "
+        "Верни только JSON: {\"id\": число, \"description\": \"текст\"}."
+    ),
+    messages=[{
+        "role": "user",
+        "content": json.dumps(function, ensure_ascii=False),
+    }],
+)
+print(response.content[0].text)
+```
+
+Ожидаемый результат:
+
+```json
+{"id": 42, "description": "Проводит заказ клиента и записывает движения по взаиморасчётам."}
+```
+
+Для массовой генерации используйте Anthropic Message Batches: пакетный API
+дешевле обычных синхронных запросов. Сохраняйте результат как JSON
+`{symbol_id: description}`:
+
+```json
+{"42": "Проводит заказ клиента и записывает движения по взаиморасчётам."}
+```
+
+Импорт:
 
 ```bash
 python scripts/import_generated_docs.py descriptions.json --db data/bsl_index.db
