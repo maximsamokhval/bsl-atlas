@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     line_start INTEGER,
     line_end INTEGER,
     centrality REAL DEFAULT 0,
+    doc_generated TEXT,
     UNIQUE(file_id, name, line_start)
 );
 
@@ -313,8 +314,9 @@ def _extract_doc_comment(lines: list[str], line_start: int) -> str:
 
 
 def _compose_card(*, name, type_, params, is_export, module_type, path, owner,
-                  synonym, callees, touches, doc) -> str:
-    """The v_best_callees discovery card. Single source of truth for card()/cards_for_module()."""
+                  synonym, callees, touches, doc, doc_generated="") -> str:
+    """The v_best_callees discovery card. Single source of truth for card()/cards_for_module().
+    Description priority: real // doc-comment > LLM-generated doc (doc_generated) > handler-intent."""
     kind = _kind_from_path(path)
     op = _owner_phrase(kind, owner or "", synonym or "")
     sig = f"{type_} {name}({', '.join(params)})" + (" Экспорт" if is_export else "")
@@ -325,6 +327,8 @@ def _compose_card(*, name, type_, params, is_export, module_type, path, owner,
         base += f". Работает с: {', '.join(touches[:8])}"
     if doc:
         return f"{doc}. {base}"
+    if doc_generated:
+        return f"{doc_generated}. {base}"
     intent = _HANDLER_INTENT.get(name.lower(), "")
     if intent:
         return f"{intent}. {base}"
@@ -347,6 +351,10 @@ class SQLiteStore:
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        conn.create_collation(
+            "UNICODE_NOCASE",
+            lambda left, right: (left.casefold() > right.casefold()) - (left.casefold() < right.casefold()),
+        )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
@@ -370,6 +378,9 @@ class SQLiteStore:
         if "centrality" not in sym_cols:
             conn.execute("ALTER TABLE symbols ADD COLUMN centrality REAL DEFAULT 0")
             logger.info("Migrated symbols: added column centrality")
+        if "doc_generated" not in sym_cols:
+            conn.execute("ALTER TABLE symbols ADD COLUMN doc_generated TEXT")
+            logger.info("Migrated symbols: added column doc_generated")
 
     def _drop_tables(self) -> None:
         with self._get_conn() as conn:
@@ -391,6 +402,47 @@ class SQLiteStore:
                 DROP TABLE IF EXISTS objects;
                 DROP TABLE IF EXISTS files;
             """)
+
+    def load_generated_docs(self, descriptions: dict[int, str]) -> dict[str, int]:
+        """Store validated LLM descriptions keyed by immutable symbol IDs.
+
+        The descriptions are intentionally kept in SQLite rather than a vector
+        collection: the next code reindex embeds them into the function card,
+        so they remain tied to the symbol and survive ChromaDB rebuilds.
+        """
+        accepted: list[tuple[str, int]] = []
+        invalid = 0
+        for symbol_id, description in descriptions.items():
+            if not isinstance(symbol_id, int) or isinstance(symbol_id, bool):
+                invalid += 1
+                continue
+            if not isinstance(description, str):
+                invalid += 1
+                continue
+            normalized = re.sub(r"\s+", " ", description).strip()
+            if not normalized:
+                invalid += 1
+                continue
+            accepted.append((normalized[:1000], symbol_id))
+
+        with self._get_conn() as conn:
+            before = conn.execute(
+                "SELECT COUNT(*) FROM symbols WHERE doc_generated IS NOT NULL AND doc_generated != ''"
+            ).fetchone()[0]
+            cursor = conn.executemany(
+                "UPDATE symbols SET doc_generated = ? WHERE id = ?", accepted
+            )
+            after = conn.execute(
+                "SELECT COUNT(*) FROM symbols WHERE doc_generated IS NOT NULL AND doc_generated != ''"
+            ).fetchone()[0]
+
+        return {
+            "received": len(descriptions),
+            "updated": cursor.rowcount,
+            "invalid": invalid,
+            "total_with_description": after,
+            "previous_total": before,
+        }
 
     @staticmethod
     def _hash_file(path: Path) -> str:
@@ -1039,7 +1091,7 @@ class SQLiteStore:
                     """SELECT s.*, f.path, f.module_type
                        FROM symbols s
                        JOIN files f ON s.file_id = f.id
-                       WHERE s.name = ? COLLATE NOCASE""",
+                       WHERE s.name = ? COLLATE UNICODE_NOCASE""",
                     (name,),
                 ).fetchall()
                 return [_row_to_function_info(r) for r in rows]
@@ -1801,10 +1853,14 @@ class SQLiteStore:
             if r["is_export"]:
                 sig += " Экспорт"
             doc = _extract_doc_comment(self._read_lines(r["path"]), r["line_start"] or 0)
+            dg_row = conn.execute(
+                "SELECT doc_generated FROM symbols WHERE id = ?", (sym_id,)
+            ).fetchone()
+            doc_generated = (dg_row["doc_generated"] if dg_row else "") or ""
             summary = _compose_card(
                 name=r["name"], type_=r["type"], params=plist, is_export=bool(r["is_export"]),
                 module_type=r["module_type"], path=r["path"], owner=owner, synonym=synonym,
-                callees=callees, touches=touches, doc=doc,
+                callees=callees, touches=touches, doc=doc, doc_generated=doc_generated,
             )
             return {
                 "symbol": r["name"],
@@ -1830,7 +1886,7 @@ class SQLiteStore:
         with self._get_conn() as conn:
             rows = conn.execute(
                 """SELECT s.id, s.name, s.type, s.params, s.is_export, s.line_start,
-                          f.module_type, f.object_name, f.path
+                          s.doc_generated, f.module_type, f.object_name, f.path
                    FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE f.path = ?""",
                 (module_path,),
@@ -1885,6 +1941,7 @@ class SQLiteStore:
                     is_export=bool(r["is_export"]), module_type=r["module_type"],
                     path=module_path, owner=owner, synonym=synonym,
                     callees=callees, touches=touches, doc=doc,
+                    doc_generated=(r["doc_generated"] or ""),
                 )
         return out
 

@@ -147,3 +147,16 @@ curl -X POST http://localhost:8000/reindex
 - рекомендуемое семейство: `qwen3-embedding-4b`
 - OpenRouter: `qwen/qwen3-embedding-4b`
 - Ollama: `qwen3-embedding:4b`
+
+## LLM-стикеры функций
+
+Короткие описания функций хранятся в `symbols.doc_generated` и добавляются к
+карточке функции при следующей векторной индексации. Импортируйте JSON вида
+`{"42": "Проводит документ и формирует движения."}`:
+
+```bash
+python scripts/import_generated_docs.py descriptions.json --db data/bsl_index.db
+```
+
+После импорта выполните `reindex_changed`, чтобы обновить векторы затронутых
+модулей. Скрипт не принимает и не хранит токены LLM.

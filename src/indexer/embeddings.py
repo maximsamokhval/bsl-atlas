@@ -68,6 +68,10 @@ class OpenAIEmbeddings:
         kwargs = {
             "api_key": api_key,
             "model": model,
+            # Qwen3 embedding responses must not be tokenized/truncated by
+            # LangChain before the request: its tiktoken path corrupts the
+            # resulting vector for OpenAI-compatible providers.
+            "check_embedding_ctx_length": False,
         }
         if base_url:
             kwargs["base_url"] = base_url
@@ -110,6 +114,8 @@ class OpenRouterEmbeddings:
             api_key=api_key,
             model=model,
             base_url=self.OPENROUTER_BASE_URL,
+            # See OpenAIEmbeddings above. Keep the API payload intact.
+            check_embedding_ctx_length=False,
         )
         logger.info(f"Initialized OpenRouter embeddings with model: {model}")
 
