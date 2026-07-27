@@ -5,7 +5,7 @@ services:
     ports:
       - "${MCP_PORT:-8000}:8000"
     volumes:
-      # Path to your 1C config dump (exported from Configurator)
+      # Required bind mount: path to your 1C config dump (exported from Configurator)
       - ${SOURCE_PATH:-./source}:/data/source:ro
       # Persistent ChromaDB vector index
       - ${CHROMA_PATH:-./chroma_db}:/data/chroma_db
@@ -22,14 +22,22 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
 
+      # --- Custom OpenAI-compatible endpoint (for local models) ---
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-}
+      - MCP_TRANSPORT=${MCP_TRANSPORT:-streamable-http}
+
       # --- Ollama (optional, for hybrid setup) ---
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3-embedding:4b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3-embedding:8b}
 
       # --- Indexing mode ---
       # fast: SQLite only, no API key needed (default)
       # full: SQLite + ChromaDB vectors (requires embedding provider + API key)
       - INDEXING_MODE=${INDEXING_MODE:-fast}
+
+      # --- Logging ---
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
       # --- Indexing settings ---
       - AUTO_INDEX=${AUTO_INDEX:-true}

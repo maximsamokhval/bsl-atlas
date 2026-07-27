@@ -19,8 +19,8 @@ def resolve_model_name(model: str | None, provider: str) -> str | None:
     """Auto-map model names between OpenRouter and Ollama naming conventions.
 
     Allows using a single EMBEDDING_MODEL value across providers:
-    - provider=ollama,    model=qwen/qwen3-embedding-4b  → qwen3-embedding:4b
-    - provider=openrouter, model=qwen3-embedding:4b      → qwen/qwen3-embedding-4b
+    - provider=ollama,    model=qwen/qwen3-embedding-8b  → qwen3-embedding:8b
+    - provider=openrouter, model=qwen3-embedding:8b      → qwen/qwen3-embedding-8b
     """
     if model is None:
         return None
@@ -68,6 +68,10 @@ class OpenAIEmbeddings:
         kwargs = {
             "api_key": api_key,
             "model": model,
+            # Qwen3 embedding responses must not be tokenized/truncated by
+            # LangChain before the request: its tiktoken path corrupts the
+            # resulting vector for OpenAI-compatible providers.
+            "check_embedding_ctx_length": False,
         }
         if base_url:
             kwargs["base_url"] = base_url
@@ -90,8 +94,8 @@ class OpenRouterEmbeddings:
     """OpenRouter embeddings - OpenAI-compatible API with multiple models.
 
     Popular models for Russian text:
-    - qwen/qwen3-embedding-4b (recommended, best quality/size ratio)
-    - qwen/qwen3-embedding-8b
+    - qwen/qwen3-embedding-8b (recommended)
+    - qwen/qwen3-embedding-4b
     - openai/text-embedding-3-small
     - cohere/embed-multilingual-v3.0
     """
@@ -101,7 +105,7 @@ class OpenRouterEmbeddings:
     def __init__(
         self,
         api_key: str,
-        model: str = "qwen/qwen3-embedding-4b",
+        model: str = "qwen/qwen3-embedding-8b",
     ):
         from langchain_openai import OpenAIEmbeddings as LCOpenAIEmbeddings
 
@@ -110,6 +114,8 @@ class OpenRouterEmbeddings:
             api_key=api_key,
             model=model,
             base_url=self.OPENROUTER_BASE_URL,
+            # See OpenAIEmbeddings above. Keep the API payload intact.
+            check_embedding_ctx_length=False,
         )
         logger.info(f"Initialized OpenRouter embeddings with model: {model}")
 
@@ -136,7 +142,7 @@ class ParallelOpenRouterEmbeddings:
     def __init__(
         self,
         api_key: str,
-        model: str = "qwen/qwen3-embedding-4b",
+        model: str = "qwen/qwen3-embedding-8b",
         concurrency: int = 10,
         batch_size: int = 1,
     ):
@@ -386,91 +392,113 @@ class JinaEmbeddings:
 class OllamaEmbeddings:
     """Ollama embeddings using local Ollama server.
 
-    Supports any Ollama embedding model, recommended: qwen3-embedding:4b
+    Supports any Ollama embedding model, recommended: qwen3-embedding:8b
     - 2560 dimensions
     - MTEB multilingual: 69.45 (1% below 8b, optimal quality/size ratio)
     - 100+ languages support, best P@5 for 1C domain (0.547 vs 0.447 for 8b)
     """
 
+    # Texts per /api/embed request. Throughput plateaus at batch >=64 on the
+    # CT106 Vulkan backend (measured: B64=36ms/card, B128/B256=34ms/card);
+    # 256 keeps each request well under Ollama's context cap for ~164-char cards.
+    DEFAULT_BATCH_SIZE = 256
+
     def __init__(
         self,
-        model: str = "qwen3-embedding:4b",
+        model: str = "qwen3-embedding:8b",
         base_url: str = "http://localhost:11434",
+        batch_size: int = DEFAULT_BATCH_SIZE,
     ):
         """Initialize Ollama embeddings.
 
         Args:
-            model: Ollama model name (default: qwen3-embedding:4b)
+            model: Ollama model name (default: qwen3-embedding:8b)
             base_url: Ollama API endpoint (default: http://localhost:11434)
+            batch_size: Texts per /api/embed request (default: 256)
         """
         import httpx
-        
+
         self.model = model
         self.base_url = base_url.rstrip("/")
-        self.api_url = f"{self.base_url}/api/embeddings"
-        self._client = httpx.Client(timeout=120.0)
-        
-        logger.info(f"Initialized Ollama embeddings: model={model}, url={base_url}")
-    
-    def _call_api(self, text: str) -> list[float]:
-        """Call Ollama API for a single text embedding.
-        
-        Ollama API format:
-        Request: {"model": "qwen3-embedding:8b", "prompt": "text"}
-        Response: {"embedding": [0.1, 0.2, ...]}
+        # /api/embed (not /api/embeddings) is the batch endpoint: accepts an
+        # `input` array and returns `embeddings` in the same order. ~3.6x faster
+        # than the per-text /api/embeddings path (34ms vs 123ms/card, measured).
+        self.api_url = f"{self.base_url}/api/embed"
+        self.batch_size = batch_size
+        self._client = httpx.Client(timeout=300.0)
+
+        logger.info(
+            f"Initialized Ollama embeddings (batch /api/embed): "
+            f"model={model}, url={base_url}, batch_size={batch_size}"
+        )
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of texts in one /api/embed call.
+
+        Ollama batch API format:
+        Request:  {"model": "bge-m3", "input": ["text1", "text2", ...]}
+        Response: {"embeddings": [[...], [...]], ...}  (same order as input)
         """
-        try:
-            response = self._client.post(
-                self.api_url,
-                json={
-                    "model": self.model,
-                    "prompt": text,
-                },
+        response = self._client.post(
+            self.api_url,
+            json={
+                "model": self.model,
+                "input": texts,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "embeddings" not in data:
+            error_msg = f"Invalid Ollama response: missing 'embeddings' field. Response keys: {list(data)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        embeddings = data["embeddings"]
+        if len(embeddings) != len(texts):
+            raise ValueError(
+                f"Ollama returned {len(embeddings)} embeddings for {len(texts)} texts"
             )
-            response.raise_for_status()
-            data = response.json()
-            
-            if "embedding" not in data:
-                error_msg = f"Invalid Ollama response: missing 'embedding' field. Response: {data}"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-            
-            return data["embedding"]
-            
-        except Exception as e:
-            logger.error(f"Error calling Ollama API: {type(e).__name__}: {e}")
-            raise
+        return embeddings
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Embed multiple documents.
-        
-        Note: Ollama API processes one text at a time, so we call it sequentially.
-        For faster indexing, use OpenRouter with parallel processing.
+        """Embed multiple documents via the /api/embed batch endpoint.
+
+        Splits into sub-batches of `batch_size`. On a sub-batch failure, retries
+        each text individually so one bad text doesn't lose the whole batch;
+        unrecoverable texts get a None placeholder to preserve order (the caller
+        filters None before upserting to ChromaDB).
         """
         if not texts:
             return []
-        
-        embeddings = []
-        for i, text in enumerate(texts):
+
+        embeddings: list[list[float] | None] = []
+        for start in range(0, len(texts), self.batch_size):
+            batch = texts[start:start + self.batch_size]
             try:
-                embedding = self._call_api(text)
-                embeddings.append(embedding)
-                
-                if (i + 1) % 10 == 0:
-                    logger.debug(f"Embedded {i + 1}/{len(texts)} documents via Ollama")
-                    
+                embeddings.extend(self._embed_batch(batch))
             except Exception as e:
-                logger.error(f"Failed to embed document {i}: {e}")
-                # Add None for failed embedding to maintain order
-                embeddings.append(None)
-        
+                logger.warning(
+                    f"Batch /api/embed failed ({type(e).__name__}: {e}) for "
+                    f"{len(batch)} texts at offset {start}; retrying individually"
+                )
+                for text in batch:
+                    try:
+                        embeddings.append(self._embed_batch([text])[0])
+                    except Exception as e2:
+                        logger.error(f"Failed to embed text individually: {type(e2).__name__}: {e2}")
+                        embeddings.append(None)
+
+            done = min(start + self.batch_size, len(texts))
+            logger.debug(f"Embedded {done}/{len(texts)} documents via Ollama batch")
+
         successful = len([e for e in embeddings if e is not None])
-        logger.info(f"Ollama embedded {successful}/{len(texts)} documents")
+        logger.info(f"Ollama embedded {successful}/{len(texts)} documents (batch)")
         return embeddings
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a single query."""
-        return self._call_api(text)
+        return self._embed_batch([text])[0]
 
 
 class LocalEmbeddings:
@@ -536,8 +564,8 @@ def create_embedding_provider(
     """Factory function to create embedding provider.
 
     Model names are auto-mapped between providers:
-    - openrouter + "qwen3-embedding:4b"    → "qwen/qwen3-embedding-4b"
-    - ollama    + "qwen/qwen3-embedding-4b" → "qwen3-embedding:4b"
+    - openrouter + "qwen3-embedding:8b"    → "qwen/qwen3-embedding-8b"
+    - ollama    + "qwen/qwen3-embedding-8b" → "qwen3-embedding:8b"
 
     Args:
         provider: One of "openai", "openrouter", "ollama", "cohere", "jina", "local"
@@ -557,10 +585,10 @@ def create_embedding_provider(
 
     match provider:
         case "openai":
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY is required for OpenAI embeddings")
+            if not api_key and not base_url:
+                raise ValueError("OPENAI_API_KEY is required for OpenAI embeddings (not needed with custom OPENAI_BASE_URL)")
             primary = OpenAIEmbeddings(
-                api_key=api_key,
+                api_key=api_key or "local",
                 model=resolved_model or "text-embedding-3-small",
                 base_url=base_url,
             )
@@ -571,19 +599,20 @@ def create_embedding_provider(
                 logger.info(f"Using ParallelOpenRouterEmbeddings with concurrency={concurrency}, batch_size={batch_size}")
                 primary = ParallelOpenRouterEmbeddings(
                     api_key=api_key,
-                    model=resolved_model or "qwen/qwen3-embedding-4b",
+                    model=resolved_model or "qwen/qwen3-embedding-8b",
                     concurrency=concurrency,
                     batch_size=batch_size,
                 )
             else:
                 primary = OpenRouterEmbeddings(
                     api_key=api_key,
-                    model=resolved_model or "qwen/qwen3-embedding-4b",
+                    model=resolved_model or "qwen/qwen3-embedding-8b",
                 )
         case "ollama":
             primary = OllamaEmbeddings(
-                model=resolved_model or "qwen3-embedding:4b",
+                model=resolved_model or "qwen3-embedding:8b",
                 base_url=base_url or "http://localhost:11434",
+                batch_size=batch_size,
             )
         case "cohere":
             if not api_key:
